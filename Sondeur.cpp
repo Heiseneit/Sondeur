@@ -1,100 +1,90 @@
-#include "Sondeur.h"
+#include "sondeur.h"
+#include "QDebug"
+#include <QRegExp>
+#include <QtSerialPort/QSerialPort>
+#define PORT "COM1"
 
-Sondeur::Sondeur(QWidget *parent) : QMainWindow(parent)
+Sondeur::Sondeur(QWidget *parent)
+	: QMainWindow(parent)
 {
-    ui.setupUi(this);
+	ui.setupUi(this);
 
-	//Initialisation du port série
 	port = new QSerialPort(this);
-	port->setPortName("COM1");
+	QObject::connect(port, SIGNAL(readyRead()), this, SLOT(serialPortRead()));
+	port->setPortName(PORT);
 	port->open(QIODevice::ReadWrite);
 	port->setBaudRate(QSerialPort::Baud4800);
 	port->setDataBits(QSerialPort::DataBits::Data8);
 	port->setParity(QSerialPort::Parity::NoParity);
 	port->setStopBits(QSerialPort::StopBits::OneStop);
 	port->setFlowControl(QSerialPort::NoFlowControl);
-	ui.labelStatus->setText("Port connecte");
-}
 
-void Sondeur::onSerialPortReadyRead() {
-
-	//Récupération les trames et s'incrémente entre elles jusqu'a ce que la trame soit complète
-	QByteArray trame = port->readAll();
-	data = data + trame.toStdString().c_str();
-	ui.listWidgetHistorique_2->addItem("Trame Generale:");
-	ui.listWidgetHistorique_2->addItem(data+"\n");
-
-	//Vérification des expressions régulières pour la trame GPS ($GPGGA) et la trame Température ($SDMTW)
-	QRegExp regExpGPS("\\$GPGGA([^\*]\*)");
-	QRegExp regExpTemp("\\$SDMTW([^\*]\*)");
-	if (regExpGPS.indexIn(data) > -1 && regExpTemp.indexIn(data) > -1) {
-
-		/* TRAME GPS */
-		//Découpage de la trame GPS
-		QStringList resDataListGPS = regExpGPS.capturedTexts();
-		QString resDataGPS = resDataListGPS[0];
-		QString gps = resDataGPS.left(resDataGPS.size());
-		dataListGPS = gps.split(QLatin1Char(','), Qt::SkipEmptyParts);
-
-		//Récupération des données GPS dans la trame
-		QString Longitude = dataListGPS[2];
-		QString Latitude = dataListGPS[4];
-		QString Profondeur = dataListGPS[9];
-
-		//Affichage des données de la trame GPS
-		ui.listWidgetHistorique->addItem("Trame GPS ($GPGGA):");
-		ui.listWidgetHistorique->addItem(gps);
-		ui.labelLongitude->setText(Longitude); 
-		ui.labelLatitude->setText(Latitude);
-		ui.labelProfondeur->setText(Profondeur);
-
-		/* TRAME TEMPERATURE */
-		//Découpage de la trame GPS
-		QStringList resDataListTemp = regExpTemp.capturedTexts();
-		QString resDataTemp = resDataListTemp[0];
-		QString temp = resDataTemp.left(resDataTemp.size());
-		dataListTemp = temp.split(QLatin1Char(','), Qt::SkipEmptyParts);
-
-		ui.listWidgetHistorique->addItem("Trame Temperature ($SDMTW):");
-		ui.listWidgetHistorique->addItem(temp);
-
-		//Vérification de l'existance d'une donnée de température dans la trame
-		if (dataListTemp[1] == "C") {
-			ui.labelTemperature->setText("NULL");
-		}
-		else {
-			//Récupération de la température dans la trame
-			QString Temperature = dataListTemp[1];
-
-			//Affichage de la température de la trame Température
-			ui.labelTemperature->setText(Temperature);
-		}
-
-		ui.listWidgetHistorique->addItem("\n");
+	if (port -> isOpen())
+	{
+		qDebug() << "Ping";
+	} else
+	{
+		qDebug() << "Pong";
 	}
 }
 
+void Sondeur::serialPortRead() {
 
-void Sondeur::connectPort() {
-	//Initialisation du timer
-	QTimer *timer = new QTimer(this);
-	QObject::connect(timer, SIGNAL(timeout()), this, SLOT(disconnectPort()));
-	
-	if (ui.temps->text().size() > 0) {
-		QString time = ui.temps->text();
-		timer->start(time.toInt());
-		ui.start->setEnabled(false);
-		ui.listWidgetHistorique->clear();
-		ui.temps->clear();
+	QByteArray data = port->read(port->bytesAvailable());
+	QString str(data);
+	trameBuff += str;
 
-		//Connexion du port série
-		QObject::connect(port, SIGNAL(readyRead()), this, SLOT(onSerialPortReadyRead()));
+	//qDebug() << trameBuff;
+
+	QRegExp startMatch("GPGGA(.+)")
+		, stopMatch("(\\*)");
+
+	int startByte = startMatch.indexIn(trameBuff);
+
+	if (startByte > -1 && startByte > 0 && stopMatch.indexIn(trameBuff, startByte + 1) > -1) {
+
+		// qDebug() << trameBuff;
+		QRegExp regex("GPGGA,(.+)(\\*)");
+		int test = regex.indexIn(trameBuff);
+
+		qDebug() << trameBuff;
+
+		QStringList list = regex.capturedTexts();
+		trameBuff.replace(0, stopMatch.indexIn(trameBuff, startByte + 1), "");
+
+        // -- Decoupe la chaine a chaque virgules
+		QStringList data = list.at(1).split(',', Qt::SkipEmptyParts);
+
+		QString Longitude = data.at(1)
+			, Latitude = data.at(3)
+			, Timestamp = data.at(0);
+		// -- Conversion
+		int LongitudeDot = Longitude.indexOf(".")
+			, LatitudeDot = Latitude.indexOf(".");
+
+		Longitude.insert(LongitudeDot - 2, ",");
+		Latitude.insert(LatitudeDot - 2, ",");
+
+		QStringList LatitudeSplit = Latitude.split(",");
+		double LatitudeDivide = LatitudeSplit.at(1).toDouble() / 60;
+		double LatitudePDivide = LatitudeSplit.at(0).toDouble();
+		double VraiLatitude = LatitudeDivide + LatitudePDivide;
+
+		QStringList LongitudeSplit = Longitude.split(",");
+		double LongitudeDivide = LongitudeSplit.at(1).toDouble() / 60;
+		double LongitudePDivide = LongitudeSplit.at(0).toDouble();
+		double VraiLongitude = LongitudeDivide + LongitudePDivide;
+
+		QString LongitudeString = QString::number(VraiLongitude);
+
+		QString LatitudeString = QString::number(VraiLatitude);
+
+		qDebug() << "Longitude : " << VraiLongitude;
+		qDebug() << "Latitude : " << VraiLatitude;
+
+		ui.Label->setText(LatitudeString);
+		ui.label->setText(LongitudeString);
+
 	}
-}
-
-void Sondeur::disconnectPort() {
-	ui.start->setEnabled(true);
-
-	//Déconnexion du port série
-	QObject::disconnect(port, nullptr, nullptr, nullptr);
+	QStringList list;
 }
